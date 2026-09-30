@@ -11,14 +11,16 @@ pkgdir=/repo/$EL_TAG/$ARCH/Packages
 # Modules that must be present, per package name.
 declare -A expect=(
 	[kmod-drbd]="drbd drbd_transport_tcp drbd_transport_lb-tcp drbd_transport_rdma"
+	[kmod-lustre]="libcfs lnet ko2iblnd ksocklnd ptlrpc obdclass lustre mgs mdt ofd"
+	[kmod-lustre-osd-ldiskfs]="ldiskfs osd_ldiskfs"
 )
-required=(kmod-drbd)
+required=(kmod-drbd kmod-lustre kmod-lustre-osd-ldiskfs)
 
 declare -A have=()
 n=0
 shopt -s nullglob
 for rpm in "$pkgdir"/kmod-*.rpm; do
-	case ${rpm##*/} in *-debuginfo-*) continue ;; esac
+	case ${rpm##*/} in *-debuginfo-* | kmod-*-devel-*) continue ;; esac
 	name=$(rpm -qp --qf '%{NAME}' "$rpm" 2>/dev/null)
 	kfull=$(rpm -qlp "$rpm" 2>/dev/null | sed -n 's#^/lib/modules/\([^/]*\)/extra/.*#\1#p' | sort -u)
 	[[ -n $kfull && $kfull != *$'\n'* ]] || die "${rpm##*/}: modules for none or several kernels"

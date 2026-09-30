@@ -41,12 +41,22 @@ while read -r ko; do
 	esac
 	vermagic=$(modinfo -F vermagic "$plain")
 	[[ ${vermagic%% *} == "$kfull" ]] || fail "$base has vermagic '$vermagic'"
-	if readelf -S --wide "$plain" | grep -q '\.debug_info'; then
+	if grep -q '\.debug_info' <<<"$(readelf -S --wide "$plain")"; then
 		fail "$base is not stripped of debug info"
 	fi
 	found[${base%.ko}]=1
 	nmod=$((nmod + 1))
 done < <(find "$tmp/lib/modules" -type f -regextype posix-extended -regex ".*$modre")
+
+# Symlinked modules (Lustre's ko2iblnd.ko -> in-kernel-ko2iblnd.ko) count if
+# they resolve to a module inside the package.
+while read -r ko; do
+	target=$(readlink -f "$ko")
+	[[ $target == "$tmp"/* && -f $target ]] || fail "${ko##*/} is a dangling symlink"
+	base=${ko##*/}
+	base=${base%.xz}; base=${base%.gz}; base=${base%.zst}
+	found[${base%.ko}]=1
+done < <(find "$tmp/lib/modules" -type l -regextype posix-extended -regex ".*$modre")
 
 for m; do
 	[[ -n ${found[$m]:-} ]] || fail "missing module $m.ko"
@@ -54,6 +64,6 @@ done
 
 nksym=$(rpm -qp --requires "$rpm" 2>/dev/null | grep -c '^kernel(' || true)
 ((nksym > 0)) || fail "no kernel(...) symbol requirements"
-rpm -qp --scripts "$rpm" 2>/dev/null | grep -q weak-modules || fail "no weak-modules scriptlets"
+grep -q weak-modules <<<"$(rpm -qp --scripts "$rpm" 2>/dev/null)" || fail "no weak-modules scriptlets"
 
 log "OK ${rpm##*/}: $nmod modules, vermagic $kfull, $nksym kernel symbol requires, weak-modules"

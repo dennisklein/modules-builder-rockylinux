@@ -29,5 +29,6 @@ EOF
 	section pinned-baseos "Rocky BaseOS ($base)" 'BaseOS/$basearch/os/'
 	section pinned-appstream "Rocky AppStream ($base)" 'AppStream/$basearch/os/'
 	section pinned-crb "Rocky CRB ($base)" 'CRB/$basearch/os/'
+	section pinned-highavailability "Rocky HighAvailability ($base)" 'HighAvailability/$basearch/os/'
 	section pinned-baseos-debug "Rocky BaseOS debuginfo ($base)" 'BaseOS/$basearch/debug/tree/'
 } >/etc/yum.repos.d/pinned-rocky.repo

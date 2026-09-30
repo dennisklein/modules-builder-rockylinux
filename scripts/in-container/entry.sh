@@ -14,7 +14,7 @@ fi
 
 # Hand files written as root back to the calling user (docker, rootful podman).
 if [[ -n ${OWNER:-} ]]; then
-	trap 'chown -R "$OWNER" /sources /build /repo 2>/dev/null || true' EXIT
+	trap 'chown -R "$OWNER" /sources /build /repo /keys 2>/dev/null || true' EXIT
 fi
 
 step=${1:?usage: entry.sh STEP [ARGS...]}

@@ -1,0 +1,96 @@
+# Example: consume the prebuilt kmod repository on a storage node.
+# Not a role; a starting point for rewriting the DRBD and Lustre roles.
+# Requires community.general (dnf_versionlock).
+- name: Kernel modules from the gsi-kmods repository
+  hosts: storage
+  become: true
+  vars:
+    kmods_repo_url: http://repo.example.gsi.de/gsi-kmods   # REPO_PUBLIC_BASEURL
+    kmods_repo_id: gsi-kmods                                # REPO_ID
+    kmods_el: el9.7
+    kernel_version: 5.14.0-611.55.1.el9_7                   # one of KVERS
+    kmp_kernel: 5.14.0_611.55.1                             # kernel_version without dist, - -> _
+    site_suffix: gsi1                                       # SITE_RELEASE_SUFFIX
+    drbd_version: 9.3.4
+    drbd_utils_version: 9.35.0
+    lustre_version: 2.17.0
+    lustre_release: "1.k{{ kmp_kernel }}.{{ site_suffix }}.el9"
+    lustre_server: true
+
+  tasks:
+    - name: Import the repository signing key
+      ansible.builtin.rpm_key:
+        key: "{{ kmods_repo_url }}/RPM-GPG-KEY-{{ kmods_repo_id }}"
+        state: present
+
+    - name: Configure the kmod repository
+      ansible.builtin.yum_repository:
+        name: "{{ kmods_repo_id }}"
+        description: "GSI prebuilt kernel modules ({{ kmods_el }})"
+        baseurl: "{{ kmods_repo_url }}/{{ kmods_el }}/$basearch/"
+        gpgkey: "{{ kmods_repo_url }}/RPM-GPG-KEY-{{ kmods_repo_id }}"
+        gpgcheck: true
+        repo_gpgcheck: true
+
+    # Replaces the distribution's e2fsprogs: Lustre servers only.
+    - name: Configure the Whamcloud e2fsprogs repository
+      ansible.builtin.yum_repository:
+        name: "{{ kmods_repo_id }}-e2fsprogs"
+        description: "GSI prebuilt kernel modules ({{ kmods_el }}, Whamcloud e2fsprogs)"
+        baseurl: "{{ kmods_repo_url }}/{{ kmods_el }}/e2fsprogs-wc/$basearch/"
+        gpgkey: "{{ kmods_repo_url }}/RPM-GPG-KEY-{{ kmods_repo_id }}"
+        gpgcheck: true
+        repo_gpgcheck: true
+      when: lustre_server
+
+    - name: Install the dnf versionlock plugin
+      ansible.builtin.dnf:
+        name: python3-dnf-plugin-versionlock
+        state: present
+
+    - name: Install the pinned kernel
+      ansible.builtin.dnf:
+        name: "kernel-core-{{ kernel_version }}"
+        state: present
+
+    - name: Install DRBD
+      ansible.builtin.dnf:
+        name:
+          - "kmod-drbd-{{ drbd_version }}_{{ kmp_kernel }}"
+          - "drbd-utils-{{ drbd_utils_version }}"
+          - drbd-udev
+        state: present
+
+    - name: Install the Lustre server (ldiskfs) and Whamcloud e2fsprogs
+      ansible.builtin.dnf:
+        name:
+          - "kmod-lustre-{{ lustre_version }}-{{ lustre_release }}"
+          - "kmod-lustre-osd-ldiskfs-{{ lustre_version }}-{{ lustre_release }}"
+          - "lustre-{{ lustre_version }}-{{ lustre_release }}"
+          - "lustre-osd-ldiskfs-mount-{{ lustre_version }}-{{ lustre_release }}"
+          - "lustre-resource-agents-{{ lustre_version }}-{{ lustre_release }}"
+          - e2fsprogs
+        state: latest    # upgrades e2fsprogs to the Whamcloud build
+      when: lustre_server
+
+    # Keep dnf from moving the kernel, and the kmods built for it, to a
+    # build for another kernel that happens to be in the repo.
+    - name: Lock the kernel and the kmods
+      community.general.dnf_versionlock:
+        name: "{{ ['kernel-' ~ kernel_version, 'kernel-core-' ~ kernel_version,
+                   'kernel-modules-' ~ kernel_version, 'kernel-modules-core-' ~ kernel_version,
+                   'kmod-drbd-' ~ drbd_version ~ '_' ~ kmp_kernel]
+                  + (lustre_server | ternary(
+                      ['kmod-lustre-' ~ lustre_version ~ '-' ~ lustre_release,
+                       'kmod-lustre-osd-ldiskfs-' ~ lustre_version ~ '-' ~ lustre_release,
+                       'lustre-' ~ lustre_version ~ '-' ~ lustre_release,
+                       'lustre-osd-ldiskfs-mount-' ~ lustre_version ~ '-' ~ lustre_release], [])) }}"
+        state: present
+
+    - name: Load DRBD and its RDMA transport at boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/drbd.conf
+        content: |
+          drbd
+          drbd_transport_rdma
+        mode: "0644"

@@ -29,3 +29,9 @@ fetch() {
 }
 
 fetch "$DRBD_URL" "${DRBD_SHA256:-}" /sources
+fetch "$DRBD_UTILS_URL" "${DRBD_UTILS_SHA256:-}" /sources
+fetch "$LUSTRE_SRPM_URL" "${LUSTRE_SRPM_SHA256:-}" /sources
+while read -r sum file; do
+	[[ -n $sum ]] || continue
+	fetch "${E2FSPROGS_BASEURL%/}/$file" "$sum" /sources/e2fsprogs
+done <<<"$E2FSPROGS_FILES"

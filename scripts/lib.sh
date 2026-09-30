@@ -58,6 +58,14 @@ verify_sha256() {
 	[[ $got == "$want" ]] || die "sha256 mismatch for ${f##*/}: expected $want, got $got"
 }
 
+# write_if_changed FILE: replace FILE with stdin only if the content differs,
+# so unchanged files keep their mtime (and rsync leaves them alone).
+write_if_changed() {
+	local tmp=$1.tmp
+	cat >"$tmp"
+	if cmp -s "$tmp" "$1"; then rm -f "$tmp"; else mv "$tmp" "$1"; fi
+}
+
 # normalize_url URL: collapse duplicate slashes in the path (LINBIT's
 # announcements use https://pkg.linbit.com//downloads/...).
 normalize_url() { sed -E 's#([^:/])/{2,}#\1/#g' <<<"$1"; }

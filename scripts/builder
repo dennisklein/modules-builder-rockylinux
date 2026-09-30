@@ -4,17 +4,24 @@
 #
 #   builder image                 build the builder image if it is missing
 #   builder fetch                 download and verify all configured sources
-#   builder build COMPONENT       build COMPONENT (drbd) for every kernel in KVERS
-#   builder repo                  publish build results into OUT_DIR and index it
+#   builder build COMPONENT       build drbd or lustre for every kernel in KVERS,
+#                                 or drbd-utils (once)
+#   builder repo                  publish build results into OUT_DIR, sign, index
 #   builder verify                check every kmod in OUT_DIR
-#   builder test                  install test in fresh containers, one per kernel
+#   builder test [file|http]      install test in fresh containers, one per kernel
+#   builder keygen                create a new signing key in KEYDIR
 #   builder shell [IMAGE]         interactive shell in the builder image
 #
 # Machine-local knobs (environment, not config):
-#   CONTAINER_RUNTIME   podman or docker (default: podman if installed)
-#   BUILDER_NETWORK     network mode for all containers (e.g. host)
-#   BUILDER_CA_BUNDLE   extra CA bundle to trust inside the containers
+#   CONTAINER_RUNTIME     podman or docker (default: podman if installed)
+#   BUILDER_NETWORK       network mode for all containers (e.g. host)
+#   BUILDER_CA_BUNDLE     extra CA bundle to trust inside the containers
 #   http(s)_proxy, no_proxy are passed through when set.
+# Signing (only when GPG_KEY_ID is set in the config):
+#   GPG_PRIVATE_KEY_FILE  armored secret key (e.g. a CI secret file), or
+#   GNUPGHOME             GnuPG home holding the key (default ~/.gnupg)
+#   GPG_PASSPHRASE_FILE   passphrase, if the key has one
+#   KEYDIR, KEY_UID       for "builder keygen"
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -24,6 +31,7 @@ load_config "$ROOT"
 
 [[ $OUT_DIR == /* ]] || OUT_DIR=$ROOT/$OUT_DIR
 PROXY_VARS=(http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY)
+EXTRA=()   # additional arguments for the next run_step
 
 detect_runtime() {
 	RT=${CONTAINER_RUNTIME:-}
@@ -96,7 +104,30 @@ run_step() {
 	fi
 	if [[ -n ${BUILDER_NETWORK:-} ]]; then args+=(--network "$BUILDER_NETWORK"); fi
 	if [[ -t 0 && -t 1 ]]; then args+=(-t); fi
+	args+=("${EXTRA[@]}")
+	EXTRA=()
 	"$RT" "${args[@]}" "$image" /src/scripts/in-container/entry.sh "$@"
+}
+
+# Hand the signing key to the repo step (read-only; copied inside).
+signing_mounts() {
+	[[ -n $GPG_KEY_ID ]] || return 0
+	if [[ -n ${GPG_PRIVATE_KEY_FILE:-} ]]; then
+		[[ -r $GPG_PRIVATE_KEY_FILE ]] || die "GPG_PRIVATE_KEY_FILE not readable: $GPG_PRIVATE_KEY_FILE"
+		EXTRA+=(-v "$(realpath "$GPG_PRIVATE_KEY_FILE"):/run/gpg-key.asc:ro")
+	else
+		local home=${GNUPGHOME:-$HOME/.gnupg}
+		[[ -d $home ]] || die "GPG_KEY_ID is set but neither GPG_PRIVATE_KEY_FILE nor GNUPGHOME ($home) is available"
+		EXTRA+=(-v "$(realpath "$home"):/run/gnupg-home:ro")
+	fi
+	passphrase_mount
+}
+
+passphrase_mount() {
+	if [[ -n ${GPG_PASSPHRASE_FILE:-} ]]; then
+		[[ -r $GPG_PASSPHRASE_FILE ]] || die "GPG_PASSPHRASE_FILE not readable: $GPG_PASSPHRASE_FILE"
+		EXTRA+=(-v "$(realpath "$GPG_PASSPHRASE_FILE"):/run/gpg-passphrase:ro")
+	fi
 }
 
 # Compat patches generated during a build (SPAAS or local spatch) are handed
@@ -118,25 +149,43 @@ import_drbd_compat() {
 
 cmd_build() {
 	local component=${1:?usage: builder build COMPONENT}
+	cmd_image
 	case $component in
-	drbd) ;;
+	drbd | lustre)
+		local kver
+		for kver in $KVERS; do
+			log "building $component for $kver"
+			run_step "$IMAGE" "build-$component" "$kver"
+		done
+		if [[ $component == drbd ]]; then import_drbd_compat; fi
+		;;
+	drbd-utils)
+		log "building drbd-utils"
+		run_step "$IMAGE" build-drbd-utils
+		;;
 	*) die "unknown component: $component" ;;
 	esac
-	cmd_image
-	local kver
-	for kver in $KVERS; do
-		log "building $component for $kver"
-		run_step "$IMAGE" "build-$component" "$kver"
-	done
-	if [[ $component == drbd ]]; then import_drbd_compat; fi
 }
 
 cmd_test() {
-	local kver
+	local transport=${1:-file} kver
 	for kver in $KVERS; do
-		log "install test for $kver in a fresh $BASE_IMAGE container"
-		run_step "$BASE_IMAGE" test-install "$kver"
+		log "install test for $kver ($transport) in a fresh $BASE_IMAGE container"
+		run_step "$BASE_IMAGE" test-install "$kver" "$transport"
 	done
+}
+
+cmd_keygen() {
+	[[ -n ${KEYDIR:-} ]] || die "set KEYDIR to a directory outside this repository"
+	mkdir -p "$KEYDIR"
+	local keydir
+	keydir=$(realpath "$KEYDIR")
+	[[ $keydir != "$ROOT" && $keydir != "$ROOT"/* ]] ||
+		die "KEYDIR must not be inside the repository: $keydir"
+	cmd_image
+	EXTRA+=(-v "$keydir:/keys" -e KEY_UID)
+	passphrase_mount
+	run_step "$IMAGE" keygen
 }
 
 cmd_shell() {
@@ -156,9 +205,10 @@ case $cmd in
 image) cmd_image ;;
 fetch) cmd_image; run_step "$IMAGE" fetch ;;
 build) cmd_build "$@" ;;
-repo) cmd_image; run_step "$IMAGE" make-repo ;;
+repo) cmd_image; signing_mounts; run_step "$IMAGE" make-repo ;;
 verify) cmd_image; run_step "$IMAGE" verify ;;
-test) cmd_test ;;
+test) cmd_test "$@" ;;
+keygen) cmd_keygen ;;
 shell) cmd_shell "$@" ;;
 *) sed -n '2,/^set -euo/{/^#/s/^# \{0,1\}//p}' "$0"; exit 2 ;;
 esac

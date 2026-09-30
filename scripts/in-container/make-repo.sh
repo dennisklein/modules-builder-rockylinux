@@ -1,34 +1,41 @@
 #!/bin/bash
-# make-repo.sh: publish build results into the output tree (/repo = OUT_DIR)
-# and (re)generate its metadata.
+# make-repo.sh: publish build results and the verified Whamcloud e2fsprogs
+# into the output tree (/repo = OUT_DIR), then sign and index it.
 #
-# Published files are immutable: a package whose file name already exists is
-# never replaced, so rollbacks keep working and clients never see a package
-# change under a known NEVRA. Metadata is generated deterministically (fixed
-# revision/timestamps, no sqlite), so an unchanged package set yields
-# byte-identical repodata.
+# - Published files are never replaced by a rebuild: rollbacks keep working
+#   and a NEVRA never changes content. Bump SITE_RELEASE_SUFFIX to publish
+#   a rebuild. Only KEEP=N removes old versions.
+# - Metadata depends only on the package set (fixed revision/timestamps, no
+#   sqlite), so an unchanged set yields byte-identical repodata, and
+#   repomd.xml.asc is only renewed when repomd.xml changes.
+# - Signed mode (GPG_KEY_ID set): every package, ours and Whamcloud's
+#   (which are unsigned upstream), is signed with our key before it is
+#   published; packages lacking our signature are (re-)signed in place.
 set -euo pipefail
 # shellcheck source=../lib.sh
 . /src/scripts/lib.sh
 load_config /src
+# shellcheck source=signlib.sh
+. /src/scripts/in-container/signlib.sh
 
 root=/repo/$EL_TAG
 bin_repo=$root/$ARCH
 src_repo=$root/SRPMS
-mkdir -p "$bin_repo/Packages" "$src_repo/Packages"
+e2fs_repo=$root/e2fsprogs-wc/$ARCH
+repos=("$bin_repo" "$src_repo" "$e2fs_repo")
+for dir in "${repos[@]}"; do mkdir -p "$dir/Packages"; done
 
+setup_signing
 added=0
-kept=0
 
-# publish RPM REPODIR
+# publish RPM REPODIR: copy RPM in unless that file name is already published.
 publish() {
 	local rpm=$1 dir=$2 name=${1##*/}
-	if [[ -e $dir/Packages/$name ]]; then
-		kept=$((kept + 1))
-		return 0
-	fi
-	cp "$rpm" "$dir/Packages/.$name.tmp"
-	mv "$dir/Packages/.$name.tmp" "$dir/Packages/$name"
+	local tmp=$dir/Packages/.$name.tmp
+	[[ -e $dir/Packages/$name ]] && return 0
+	cp "$rpm" "$tmp"
+	if ((SIGNING)); then sign_rpms "$tmp"; fi
+	mv "$tmp" "$dir/Packages/$name"
 	log "added ${dir#/repo/}/Packages/$name"
 	added=$((added + 1))
 }
@@ -45,7 +52,49 @@ for rpm in /build/rpms/*/*/SRPMS/*.src.rpm; do
 	publish "$rpm" "$src_repo"
 done
 shopt -u nullglob
-log "$added packages added, $kept already published"
+
+# Whamcloud e2fsprogs: exactly the configured files, re-verified.
+while read -r sum file; do
+	[[ -n $sum ]] || continue
+	src=/sources/e2fsprogs/$file
+	[[ -f $src ]] || die "missing sources/e2fsprogs/$file; run 'make fetch'"
+	verify_sha256 "$src" "$sum"
+	publish "$src" "$e2fs_repo"
+done <<<"$E2FSPROGS_FILES"
+log "$added packages added"
+
+# Signed mode on a tree that has unsigned (dev mode) or foreign-key packages.
+if ((SIGNING)); then
+	unsigned=()
+	for dir in "${repos[@]}"; do
+		for rpm in "$dir"/Packages/*.rpm; do
+			[[ -e $rpm ]] || continue
+			signed_by_us "$rpm" || unsigned+=("$rpm")
+		done
+	done
+	if ((${#unsigned[@]})); then
+		warn "signing ${#unsigned[@]} published packages that lack our signature"
+		sign_rpms "${unsigned[@]}"
+	fi
+fi
+
+# KEEP=N: keep the N newest versions of each package name. kmods built for a
+# kernel that is still listed in KVERS are never removed.
+prune() {
+	local dir=$1 path k keep
+	local -a protect=()
+	for k in $KVERS; do protect+=("$(kmp_kver "$k")"); done
+	while read -r path; do
+		[[ -n $path ]] || continue
+		keep=0
+		for k in "${protect[@]}"; do
+			[[ ${path##*/} == *"$k"* ]] && keep=1
+		done
+		if ((keep)); then continue; fi
+		log "pruning ${path#/repo/}"
+		rm -f "$path"
+	done < <(dnf -q repomanage --old --keep "$KEEP" "$dir" 2>/dev/null)
+}
 
 # index REPODIR: createrepo_c with metadata that depends only on the packages.
 index() {
@@ -56,12 +105,25 @@ index() {
 		--set-timestamp-to-revision "$dir"
 }
 
-for dir in "$bin_repo" "$src_repo"; do
+for dir in "${repos[@]}"; do
 	index "$dir"
+	if [[ -n ${KEEP:-} ]]; then
+		[[ $KEEP =~ ^[1-9][0-9]*$ ]] || die "KEEP must be a positive number"
+		prune "$dir"
+		index "$dir"
+	fi
+	if ((SIGNING)); then
+		sign_repomd "$dir"
+	else
+		rm -f "$dir/repodata/repomd.xml.asc"
+	fi
 done
 
-render_repo_file "$REPO_PUBLIC_BASEURL" >"/repo/$REPO_ID.repo"
-if [[ -z $GPG_KEY_ID ]]; then
+render_repo_file "$REPO_PUBLIC_BASEURL" | write_if_changed "/repo/$REPO_ID.repo"
+if ((SIGNING)); then
+	gpg --batch --armor --export "$GPG_KEY_ID" | write_if_changed "/repo/RPM-GPG-KEY-$REPO_ID"
+else
+	rm -f "/repo/RPM-GPG-KEY-$REPO_ID"
 	cat >&2 <<'EOF'
 
   ********************************************************************
