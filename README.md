@@ -82,7 +82,7 @@ with an incompatible ABI.
   are installed.
 - Network access to the hosts listed under [Network access](#network-access).
 - About 10 GB of disk for images, dnf cache, sources and build trees. The first
-  full build takes roughly 30 minutes on 4 cores; Lustre is most of it.
+  full build from a fresh clone took 12 minutes on 4 cores; Lustre is most of it.
 - `shellcheck`, only for `make lint`.
 
 ## Quick start
