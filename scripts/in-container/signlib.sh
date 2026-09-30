@@ -13,7 +13,9 @@ setup_signing() {
 	[[ -n $GPG_KEY_ID ]] || return 0
 	export GNUPGHOME=/tmp/gnupg
 	install -d -m 700 "$GNUPGHOME"
-	GPG_EXTRA=(--pinentry-mode loopback)
+	# --batch: rpm's own gpg command line lacks it; without it a key with a
+	# passphrase but no GPG_PASSPHRASE_FILE would prompt instead of failing.
+	GPG_EXTRA=(--batch --pinentry-mode loopback)
 	if [[ -s /run/gpg-passphrase ]]; then GPG_EXTRA+=(--passphrase-file /run/gpg-passphrase); fi
 	if [[ -d /run/gnupg-home ]]; then
 		tar -C /run/gnupg-home --exclude='S.*' --exclude='*.lock' -cf - . | tar -C "$GNUPGHOME" -xf -

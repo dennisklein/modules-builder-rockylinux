@@ -21,7 +21,7 @@ install_kernel_pkgs() {
 # already_built OUTDIR FILE: true (skip the build) if FILE exists in the
 # published repo or in OUTDIR/RPMS, unless FORCE is set.
 already_built() {
-	[[ -z ${FORCE:-} ]] || return 1
+	case ${FORCE:-} in 1 | yes | true) return 1 ;; esac
 	[[ -f $PUBLISHED/$2 || -f $1/RPMS/$2 ]]
 }
 

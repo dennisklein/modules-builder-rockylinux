@@ -42,15 +42,10 @@ detect_runtime() {
 	fi
 	command -v "$RT" >/dev/null || die "container runtime not found: $RT"
 
-	# Files written by root in the container belong to root on the host,
-	# except with rootless podman, where container root is the calling user.
+	# Who should own what the containers write. entry.sh only applies this
+	# when container uids are host uids (rootful runtime without userns remap).
 	OWNER=
-	if [[ $(id -u) != 0 ]]; then
-		if [[ $RT != podman ]] ||
-			[[ $("$RT" info --format '{{.Host.Security.Rootless}}' 2>/dev/null) != true ]]; then
-			OWNER=$(id -u):$(id -g)
-		fi
-	fi
+	if [[ $(id -u) != 0 ]]; then OWNER=$(id -u):$(id -g); fi
 }
 
 # The image tag changes whenever anything that goes into the image changes.
@@ -104,7 +99,7 @@ run_step() {
 	fi
 	if [[ -n ${BUILDER_NETWORK:-} ]]; then args+=(--network "$BUILDER_NETWORK"); fi
 	if [[ -t 0 && -t 1 ]]; then args+=(-t); fi
-	args+=("${EXTRA[@]}")
+	args+=(${EXTRA[@]+"${EXTRA[@]}"})
 	EXTRA=()
 	"$RT" "${args[@]}" "$image" /src/scripts/in-container/entry.sh "$@"
 }

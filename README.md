@@ -156,7 +156,10 @@ sources Lustre's configure finds by itself. Build dependencies come from
 
 A build is skipped when its result already exists in `OUT_DIR` or `build/`,
 so re-running `make repo` is cheap. `FORCE=1` rebuilds anyway, but a rebuild
-never replaces a published file (see below).
+never replaces a published file (see below). DRBD's SRPM has no kernel in its
+name, so it is published once and shared by all kernels. If a later kernel's
+build needed a committed compat patch, `make repo` warns that the published
+SRPM lacks it. The patch itself is always in `patches/drbd-compat/`.
 
 The Lustre build applies the ldiskfs patch series that configure picks from
 the kernel headers (`5.14-rhel9.7.series` for any 9.7 kernel) with no fuzz.
@@ -249,8 +252,9 @@ and prints a warning. Never publish such a tree to production hosts.
   kernel to `KVERS` only adds packages.
 - **Relative locations only.** The tree works under any base URL.
 - **Pruning is explicit.** `make prune KEEP=N` (or `KEEP=N make repo`) keeps
-  the N newest versions of each package name in each repository. Packages
-  built for a kernel that is still listed in `KVERS` are never pruned.
+  the N newest versions of each package name. Packages built for a kernel
+  that is still listed in `KVERS` are never pruned. A source package is
+  removed only when no published binary package was built from it.
 - **Only configured kernels are published.** Builds in `build/` for a kernel
   no longer listed in `KVERS` are ignored, so pruned packages do not come
   back.
@@ -458,8 +462,10 @@ against `python3 -m http.server`.
 - **Behind a proxy**: set `https_proxy`, and `BUILDER_CA_BUNDLE` for a
   TLS-inspecting proxy; `BUILDER_NETWORK=host` if the proxy listens on
   localhost.
-- **Root-owned files with Docker**: the containers hand everything they write
-  back to the calling user. With rootless Podman this is not needed.
+- **File ownership**: with a rootful runtime (e.g. Docker via the docker
+  group) the containers hand everything they write back to the calling user.
+  With rootless Podman or Docker, or with userns remapping, container root
+  already maps to the caller, so nothing is changed.
 
 ## Layout of this repository
 

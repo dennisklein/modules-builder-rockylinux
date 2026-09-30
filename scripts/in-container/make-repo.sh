@@ -32,7 +32,15 @@ added=0
 publish() {
 	local rpm=$1 dir=$2 name=${1##*/}
 	local tmp=$dir/Packages/.$name.tmp
-	[[ -e $dir/Packages/$name ]] && return 0
+	if [[ -e $dir/Packages/$name ]]; then
+		# DRBD's SRPM has the same name for every kernel; say so if a build
+		# carried different sources (e.g. a committed compat patch).
+		if [[ $name == *.src.rpm ]] &&
+			[[ $(rpm -qpl "$rpm" 2>/dev/null) != "$(rpm -qpl "$dir/Packages/$name" 2>/dev/null)" ]]; then
+			warn "${rpm#/} has other sources than the published $name; keeping the published one"
+		fi
+		return 0
+	fi
 	cp "$rpm" "$tmp"
 	if ((SIGNING)); then sign_rpms "$tmp"; fi
 	mv "$tmp" "$dir/Packages/$name"
@@ -89,22 +97,43 @@ if ((SIGNING)); then
 	fi
 fi
 
-# KEEP=N: keep the N newest versions of each package name. kmods built for a
-# kernel that is still listed in KVERS are never removed.
+# KEEP=N: keep the N newest versions of each package name. Packages built for
+# a kernel that is still listed in KVERS are never removed; the kernel appears
+# as "_<kmp>-" in kmod-drbd's file name and as ".k<kmp>." in Lustre's.
 prune() {
-	local dir=$1 path k keep
+	local dir=$1 path k keep old
 	local -a protect=()
 	for k in $KVERS; do protect+=("$(kmp_kver "$k")"); done
+	old=$(dnf -q repomanage --old --keep "$KEEP" "$dir")
 	while read -r path; do
 		[[ -n $path ]] || continue
 		keep=0
 		for k in "${protect[@]}"; do
-			[[ ${path##*/} == *"$k"* ]] && keep=1
+			case ${path##*/} in *"_$k-"* | *".k$k."*) keep=1 ;; esac
 		done
 		if ((keep)); then continue; fi
 		log "pruning ${path#/repo/}"
 		rm -f "$path"
-	done < <(dnf -q repomanage --old --keep "$KEEP" "$dir" 2>/dev/null)
+	done <<<"$old"
+}
+
+# prune_srpms: remove source packages that no published binary package was
+# built from any more (DRBD's SRPM name carries no kernel, so KEEP per name
+# would not fit).
+prune_srpms() {
+	local rpm
+	local -A used=()
+	for rpm in "$bin_repo"/Packages/*.rpm; do
+		[[ -e $rpm ]] || continue
+		used[$(rpm -qp --qf '%{SOURCERPM}' "$rpm" 2>/dev/null)]=1
+	done
+	for rpm in "$src_repo"/Packages/*.src.rpm; do
+		[[ -e $rpm ]] || continue
+		if [[ -z ${used[${rpm##*/}]:-} ]]; then
+			log "pruning ${rpm#/repo/} (no published package built from it)"
+			rm -f "$rpm"
+		fi
+	done
 }
 
 # index REPODIR: createrepo_c with metadata that depends only on the packages.
@@ -116,11 +145,13 @@ index() {
 		--set-timestamp-to-revision "$dir"
 }
 
+if [[ -n ${KEEP:-} ]]; then
+	[[ $KEEP =~ ^[1-9][0-9]*$ ]] || die "KEEP must be a positive number"
+fi
 for dir in "${repos[@]}"; do
 	index "$dir"
 	if [[ -n ${KEEP:-} ]]; then
-		[[ $KEEP =~ ^[1-9][0-9]*$ ]] || die "KEEP must be a positive number"
-		prune "$dir"
+		if [[ $dir == "$src_repo" ]]; then prune_srpms; else prune "$dir"; fi
 		index "$dir"
 	fi
 	if ((SIGNING)); then
@@ -132,7 +163,9 @@ done
 
 render_repo_file "$REPO_PUBLIC_BASEURL" | write_if_changed "/repo/$REPO_ID.repo"
 if ((SIGNING)); then
-	gpg --batch --armor --export "$GPG_KEY_ID" | write_if_changed "/repo/RPM-GPG-KEY-$REPO_ID"
+	pubkey=$(gpg --batch --armor --export "$GPG_KEY_ID")
+	[[ -n $pubkey ]] || die "could not export the public key of $GPG_KEY_ID"
+	printf '%s\n' "$pubkey" | write_if_changed "/repo/RPM-GPG-KEY-$REPO_ID"
 else
 	rm -f "/repo/RPM-GPG-KEY-$REPO_ID"
 	cat >&2 <<'EOF'
