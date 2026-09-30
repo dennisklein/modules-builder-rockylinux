@@ -1,12 +1,11 @@
 # Upstream build notes
 
 Facts about the upstream build systems this builder relies on, verified on
-2026-09-30 by reading the sources at their release tags (GitHub mirrors:
+2026-09-30. They come from the sources at their release tags (GitHub mirrors:
 `LINBIT/drbd` tag `drbd-9.3.4`, `LINBIT/drbd-utils` tags `v9.34.0`/`v9.35.0`,
-`lustre/lustre-release` tag `v2_17_0`, `elrepo/packages`). Release tarballs,
-the Whamcloud SRPM and the Rocky trees could not be downloaded from the
-environment the notes were written in, so anything that only the tarball or
-SRPM can show is marked "to verify".
+`lustre/lustre-release` tag `v2_17_0`, `elrepo/packages`), from the release
+tarballs, the Whamcloud SRPM and RPMs, and from the Rocky 9.7 vault, and
+were confirmed by building.
 
 ## Base image and Rocky trees
 
@@ -19,10 +18,21 @@ SRPM can show is marked "to verify".
   explicit `baseurl=` entries for the 9.7 trees.
 - Rocky tree layout (same for `dl.rockylinux.org/vault/rocky/9.7` and, per the
   old role, `lxrpt8.gsi.de/rocky/9.7`):
-  `<base>/{BaseOS,AppStream,CRB}/x86_64/os/`,
+  `<base>/{BaseOS,AppStream,CRB,HighAvailability}/x86_64/os/`,
   `<base>/BaseOS/x86_64/debug/tree/`, `<base>/BaseOS/source/tree/`.
+  `resource-agents`, which `lustre-resource-agents` requires, is only in
+  HighAvailability.
+- The 9.7 vault is frozen. Its newest kernel is `5.14.0-611.55.1.el9_7`;
+  `kernel-devel` is in AppStream, and `kernel-debuginfo-common-x86_64` is in
+  the BaseOS debug tree.
 
 ## DRBD 9.3.4 kernel module
+
+- LINBIT publishes no checksums or signatures for its tarballs. Every
+  unknown URL under `pkg.linbit.com/downloads/` returns the same HTML page
+  with status 200, and directory listings are forbidden. The tarball's
+  contents equal the `drbd-9.3.4` git tag, apart from generated files (SBOMs,
+  `.filelist`, `.drbd_git_revision`) and the cocci cache.
 
 - `drbd-kernel.spec` is already a kmodtool spec: it calls
   `%kernel_module_package -n drbd -v <version>_<kernel>`, so the result is
@@ -65,11 +75,16 @@ SRPM can show is marked "to verify".
   The key is the md5 of the `compat.h` generated from compile tests against
   the target kernel, not the kernel release string. A new kernel whose
   feature set matches a cached entry reuses it without network access.
-- Reproducible plan: build with `SPAAS=false` after copying
-  `patches/drbd-compat/<md5>/{compat.h,compat.patch}` into the cache. If the
-  cache misses, run once with SPAAS or a local Coccinelle (>= 1.1.1, suggested
-  1.2), then commit the generated entry. Fail with a clear message if none of
-  these is available.
+- The 9.3.4 tarball's cache has 51 entries. The entry
+  `c9b89d1198ce95ba056b14153405edb8` (recorded for `5.14.0-611.5.1.el9_7`)
+  matches both 611.54.1 and 611.55.1, so these build offline. A SPAAS
+  request for the same `compat.h` returned a byte-identical patch.
+- The DRBD Makefile's `fix-tar-timestamps` step touches every
+  `cocci_cache/*/compat.patch` during the build, so entries injected in
+  `%prep` are treated as fresh.
+- The builder builds with `SPAAS=false`. It injects committed entries from
+  `patches/drbd-compat/<md5>/` through an extra SRPM source, and saves
+  entries that SPAAS generated when `DRBD_ALLOW_SPAAS=yes`.
 
 ## drbd-utils
 
@@ -82,9 +97,15 @@ SRPM can show is marked "to verify".
   feature flag `DRBD_MDFF_BITMAP_AUTHORITATIVE`, and drbdmeta 9.35.0 clears
   feature bits it does not know when it writes metadata (`DRBD_MD_FEATURES`
   mask). That is the designed forward-compatibility path. LINBIT's
-  announcement could not be read to confirm this (to verify).
-- Spec (`drbd.spec.in`, which the tarball should ship generated as
-  `drbd.spec`; to verify) yields `drbd` (meta), `drbd-utils`, `drbd-udev`,
+  announcement was not checked.
+- The tarball ships only `drbd.spec.in`, not `drbd.spec`, so `rpmbuild -tb`
+  does not work. Upstream's `make rpm` runs `./configure --enable-spec`,
+  which substitutes `@PACKAGE_VERSION@`, `@DRBD_LIB_DIR@` and
+  `@udevrulesdir@`. The last one comes from `pkg-config udev`, so the spec
+  must be generated after the build dependencies are installed. Otherwise it
+  says `/lib/udev/rules.d` while the build installs into
+  `/usr/lib/udev/rules.d`.
+- The spec yields `drbd` (meta), `drbd-utils`, `drbd-udev`,
   `drbd-pacemaker`, `drbd-bash-completion`, `drbd-selinux` (auto on EL >= 8),
   and `drbd-man-ja`. Bconds: `manual`, `udev`, `pacemaker`, `bashcompletion`,
   `84support`, `drbdmon` (on), and `prebuiltman`, `coverage`, `selinux` (off).
@@ -93,6 +114,12 @@ SRPM can show is marked "to verify".
   literal, so the suffix has to be patched in.
 
 ## Lustre 2.17.0 server
+
+- Whamcloud's `lustre-2.17.0-1.src.rpm` (el9.7 server) is unsigned; the
+  published `sha256sum` is the only integrity anchor. Its spec has
+  `kver 5.14.0-611.13.1_lustre.el9.x86_64` and `release_id 1` baked in.
+  BuildRequires include `e2fsprogs-devel >= 1.44.3`, and `openmpi-devel`
+  only with `lustre_tests`.
 
 - Bconds (`lustre.spec.in`): on by default are `servers`, `ldiskfs`,
   `lustre_tests`, `lustre_utils`, `lustre_iokit`, `lustre_modules`,
@@ -120,7 +147,10 @@ SRPM can show is marked "to verify".
   explicitly.
 - Module paths: `/lib/modules/<kver>/extra/lustre/...` and
   `/lib/modules/<kver>/extra/lustre-osd-ldiskfs/fs/{ldiskfs,osd_ldiskfs}.ko`.
-  o2iblnd stays in `kmod-lustre` unless `multiple_lnds` is enabled.
+  o2iblnd stays in `kmod-lustre` unless `multiple_lnds` is enabled. With the
+  inbox RDMA stack the module is built as `net/in-kernel-ko2iblnd.ko`, and
+  `net/ko2iblnd.ko` is a relative symlink to it. That is upstream's switch
+  between the inbox and external-OFED variants.
 - Dependencies worth knowing: `BuildRequires: kernel >= 3.10`, so the build
   root needs a `kernel` package, not only `kernel-devel`.
   `kmod-lustre-osd-ldiskfs` has `Requires: ldiskfsprogs >= 1.44.3.wc1`, which
@@ -144,5 +174,14 @@ SRPM can show is marked "to verify".
   no override: `EXT4_SRC_DIR` is always assigned.
 - **Silent failure mode:** if the ext4 source is not found, configure only
   warns and disables ldiskfs, and the build still succeeds without
-  `kmod-lustre-osd-ldiskfs`. The builder must assert that the package exists
-  and contains `ldiskfs.ko` and `osd_ldiskfs.ko`.
+  `kmod-lustre-osd-ldiskfs`. The builder asserts that the package exists and
+  contains `ldiskfs.ko` and `osd_ldiskfs.ko`.
+- Against `5.14.0-611.55.1.el9_7`, configure found the sources through the
+  second path, picked `5.14-rhel9.7.series`, and all 45 patches applied.
+
+## Whamcloud e2fsprogs
+
+- `1.47.3.wc2/el9/RPMS/x86_64/` is the pinned directory; `latest/` moves.
+  The RPMs are unsigned (built on `onyx-*.whamcloud.com`). Only
+  Whamcloud's e2fsprogs provides `ldiskfsprogs`, which
+  `kmod-lustre-osd-ldiskfs` and `lustre-osd-ldiskfs-mount` require.

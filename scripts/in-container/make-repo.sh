@@ -40,16 +40,27 @@ publish() {
 	added=$((added + 1))
 }
 
+# Build results live in build/rpms/<component>/<kernel or "all">/. Only
+# kernels still in KVERS are published, so pruned builds do not come back.
+declare -A wanted=([all]=1)
+for k in $KVERS; do wanted[$k]=1; done
 shopt -s nullglob
-for rpm in /build/rpms/*/*/RPMS/*.rpm; do
-	case ${rpm##*/} in
-	*-debuginfo-*.rpm | *-debugsource-*.rpm)
-		[[ $PUBLISH_DEBUGINFO == yes ]] || continue ;;
-	esac
-	publish "$rpm" "$bin_repo"
-done
-for rpm in /build/rpms/*/*/SRPMS/*.src.rpm; do
-	publish "$rpm" "$src_repo"
+for build in /build/rpms/*/*/; do
+	build=${build%/}
+	if [[ -z ${wanted[${build##*/}]:-} ]]; then
+		log "ignoring ${build#/} (kernel not in KVERS)"
+		continue
+	fi
+	for rpm in "$build"/RPMS/*.rpm; do
+		case ${rpm##*/} in
+		*-debuginfo-*.rpm | *-debugsource-*.rpm)
+			[[ $PUBLISH_DEBUGINFO == yes ]] || continue ;;
+		esac
+		publish "$rpm" "$bin_repo"
+	done
+	for rpm in "$build"/SRPMS/*.src.rpm; do
+		publish "$rpm" "$src_repo"
+	done
 done
 shopt -u nullglob
 
