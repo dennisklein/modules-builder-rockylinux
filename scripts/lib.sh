@@ -26,6 +26,12 @@ load_config() {
 	[[ $SITE_RELEASE_SUFFIX =~ ^[A-Za-z0-9.]+$ ]] ||
 		die "config: SITE_RELEASE_SUFFIX may only contain letters, digits and dots"
 
+	local k
+	for k in $KVERS; do
+		[[ $k =~ ^[0-9][^-]*-[^-]+$ && $k != *".$ARCH" ]] ||
+			die "config: KVERS entry '$k' must be a kernel release without arch, e.g. 5.14.0-611.55.1.el9_7"
+	done
+
 	EL_MAJOR=${EL_RELEASE%%.*}
 	EL_TAG=el$EL_RELEASE
 	GPG_KEY_ID=${GPG_KEY_ID:-}

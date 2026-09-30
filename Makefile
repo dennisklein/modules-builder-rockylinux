@@ -4,6 +4,9 @@
 BUILDER := scripts/builder
 export FORCE KEEP
 
+# Builds share one dnf cache volume; run them one after the other.
+.NOTPARALLEL:
+
 .PHONY: all repo image fetch drbd lustre drbd-utils prune verify test test-http \
 	keygen shell lint clean help
 
